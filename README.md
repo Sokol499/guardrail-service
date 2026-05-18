@@ -445,7 +445,7 @@ Service listens on port **8000**. Chroma data persists in the `chroma_data` volu
 |----------|---------|-------------|
 | `APP_ENV` | `development` | `production` enables JSON logging |
 | `LOG_LEVEL` | `INFO` | Log verbosity |
-| `OPENAI_API_KEY` | — | OpenRouter (or OpenAI) API key |
+| `OPENAI_API_KEY` | — | OpenRouter API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Set to OpenRouter endpoint for cloud path |
 | `OPENAI_MODEL` | `mistral-small-3.1-24b-instruct` | Model ID (e.g. `mistralai/mistral-small-3.1-24b-instruct` on OpenRouter) |
 | `LOCAL_MODEL_NAME` | `unitary/toxic-bert` | HuggingFace toxicity model |
