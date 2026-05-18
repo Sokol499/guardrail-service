@@ -305,9 +305,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # Live (deployed on Render)
 
-API: https://guardrail-service.onrender.com
-Swagger: https://guardrail-service.onrender.com/docs
-Health: https://guardrail-service.onrender.com/api/v1/health
+- API: https://guardrail-service.onrender.com
+- Swagger: https://guardrail-service.onrender.com/docs
+- Health: https://guardrail-service.onrender.com/api/v1/health
 
 # Local development
 
