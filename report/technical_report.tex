@@ -1,0 +1,678 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper]{report}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{russian}
+\setmainfont{Times New Roman}[
+  BoldFont = Times New Roman Bold,
+  ItalicFont = Times New Roman Italic,
+]
+\setsansfont{Arial}
+\setmonofont{Courier New}
+\newfontfamily\cyrillicfont{Times New Roman}
+\newfontfamily\cyrillicfontsf{Arial}
+\newfontfamily\cyrillicfonttt{Courier New}
+
+\usepackage{geometry}
+\geometry{left=2.5cm,right=2cm,top=2.5cm,bottom=2.5cm}
+
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=green!50!black,
+    urlcolor=blue!70!black,
+    pdftitle={Guardrail Service --- Технический отчёт},
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{keyword}{RGB}{0,80,160}
+
+\lstdefinestyle{python}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    keywordstyle=\color{keyword}\bfseries,
+    commentstyle=\color{gray},
+    stringstyle=\color{teal},
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{gray!30},
+    tabsize=4,
+    showstringspaces=false,
+}
+
+\lstdefinestyle{json}{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{gray!30},
+}
+
+\lstdefinestyle{bash}{
+    language=Bash,
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{codebg},
+    breaklines=true,
+    frame=single,
+}
+
+\title{%
+  \textbf{Guardrail Service for Conversational AI}\\[0.4em]
+  \large Технический отчёт по реализации сервиса модерации\\
+  \large Тестовое задание: Backend / ML Engineering
+}
+\author{Middle/Senior Backend Engineer}
+\date{\today}
+
+\begin{document}
+
+%----------------------------------------------------------------------
+% Титульный лист
+%----------------------------------------------------------------------
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+    {\LARGE Москва, \the\year\par}
+    \vspace{2cm}
+    {\Huge\bfseries Guardrail Service for Conversational AI\par}
+    \vspace{1.2cm}
+    {\Large Технический отчёт\par}
+    \vspace{0.8cm}
+    {\large Сервис модерации ответов conversational AI\par}
+    \vspace{0.5cm}
+    {\normalsize Тестовое задание: проектирование и реализация\\
+    production-style MVP на Python / FastAPI\par}
+    \vfill
+    \begin{tabular}{rl}
+        \textbf{Автор:} & Backend Engineer \\
+        \textbf{Стек:} & Python, FastAPI, Transformers, ChromaDB, OpenRouter \\
+        \textbf{Дата:} & \today \\
+    \end{tabular}
+    \vspace{2cm}
+\end{titlepage}
+
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+%======================================================================
+\chapter{Постановка задачи}
+%======================================================================
+
+\section{Описание проблемы}
+
+Корпоративные и потребительские системы на базе больших языковых моделей (LLM)
+генерируют ответы в режиме реального времени. Даже при наличии системных промптов
+модель может выдавать токсичный контент, персональные данные, инструкции по причинению вреда
+или поддаваться атакам jailbreak / prompt injection. После генерации ответа требуется
+независимый контур проверки --- \emph{guardrail} --- который возвращает структурированное
+решение для шлюза доставки сообщения пользователю.
+
+\textbf{Guardrail Service} --- HTTP-сервис, принимающий текст ответа ассистента
+(и опционально контекст диалога) и возвращающий решение модерации в машиночитаемом JSON.
+
+\section{Зачем нужны guardrails для LLM}
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Безопасность пользователей} --- блокировка self-harm, насилия, мошенничества.
+    \item \textbf{Комплаенс} --- снижение регуляторных рисков (в т.\,ч.\ 152-ФЗ при обработке ПДн).
+    \item \textbf{Репутационные риски} --- предотвращение утечки PII и токсичных формулировок.
+    \item \textbf{Устойчивость к атакам} --- детекция попыток обхода политик (DAN, ignore instructions).
+    \item \textbf{Аудит} --- объяснимые решения с категорией и уровнем риска.
+\end{itemize}
+
+\section{Категории рисков}
+
+Сервис поддерживает 18 категорий нарушений политики и категорию \texttt{none}:
+
+\begin{longtable}{@{}p{4.2cm}p{9.5cm}@{}}
+\toprule
+\textbf{Категория} & \textbf{Смысл} \\
+\midrule
+\endhead
+hate\_speech & Разжигание ненависти, дискриминация \\
+extremism & Экстремизм, радикализация \\
+violence & Насилие, угрозы \\
+self\_harm & Суицид, самоповреждение \\
+medical\_advice & Неквалифицированные мед.\ рекомендации \\
+legal\_advice & Юридические консультации вместо юриста \\
+pii\_leakage & Утечка персональных / секретных данных \\
+sexual\_content & Неприемлемый сексуальный контент \\
+harassment & Травля, домогательства \\
+fraud & Мошенничество, фишинг \\
+malware & Вредоносное ПО, эксплойты \\
+jailbreak\_attempts & Обход ограничений модели \\
+prompt\_injection & Инъекции в промпт \\
+political\_manipulation & Манипуляции выборами \\
+disinformation & Дезинформация \\
+toxic\_language & Токсичная лексика \\
+privacy\_violations & Нарушение приватности \\
+unsafe\_instructions & Опасные пошаговые инструкции \\
+\bottomrule
+\end{longtable}
+
+Уровни риска: \texttt{LOW}, \texttt{MEDIUM}, \texttt{HIGH}.
+Решения: \texttt{ALLOW}, \texttt{WARN}, \texttt{BLOCK}.
+
+\section{Требования технического задания}
+
+\begin{enumerate}
+    \item REST API на FastAPI со Swagger-документацией.
+    \item Два независимых пайплайна модерации: локальный (OSS) и облачный (LLM\,+\,RAG).
+    \item Локально: transformer-модель, regex PII, правила jailbreak, risk scoring.
+    \item Облачно: ChromaDB, embeddings, RAG, LLM-классификация с JSON-ответом.
+    \item Docker, логирование, модульная архитектура, benchmark, pytest, README.
+    \item Набор политик (policy dataset) для RAG.
+\end{enumerate}
+
+%======================================================================
+\chapter{Архитектура решения}
+%======================================================================
+
+\section{Общая схема сервиса}
+
+На рисунке~\ref{fig:system} показана высокоуровневая архитектура.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.1cm and 1.4cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3.2cm, minimum height=0.9cm, align=center, font=\small},
+    layer/.style={rectangle, draw, dashed, inner sep=0.35cm},
+    arr/.style={-{Stealth[length=2.5mm]}, thick}
+]
+    \node[box] (client) {Клиент / LLM Gateway};
+    \node[box, below=of client] (api) {FastAPI\\GuardrailService};
+    \node[box, below left=1.3cm and 0.3cm of api] (local) {LocalModerator\\OSS ensemble};
+    \node[box, below right=1.3cm and 0.3cm of api] (cloud) {CloudModerator\\RAG + LLM};
+    \node[box, below=of local] (models) {toxic-bert, MiniLM,\\regex, scorer};
+    \node[box, below=of cloud] (ext) {ChromaDB,\\OpenRouter};
+
+    \draw[arr] (client) -- (api);
+    \draw[arr] (api) -- (local);
+    \draw[arr] (api) -- (cloud);
+    \draw[arr] (local) -- (models);
+    \draw[arr] (cloud) -- (ext);
+
+    \begin{scope}[on background layer]
+        \node[layer, fit=(api) (local) (cloud), label={[anchor=north west, font=\footnotesize]x=0.1,y=0.1}Сервис guardrail-service] {};
+    \end{scope}
+\end{tikzpicture}
+\caption{Контекстная архитектура Guardrail Service}
+\label{fig:system}
+\end{figure}
+
+\section{Слой FastAPI API}
+
+\begin{itemize}
+    \item \texttt{app/main.py} --- приложение, CORS, lifespan, маршрутизация \texttt{/api/v1}.
+    \item \texttt{app/api/routes.py} --- эндпоинты модерации и health.
+    \item \texttt{app/api/schemas.py} --- Pydantic-схемы запроса/ответа.
+    \item \texttt{app/services/guardrail\_service.py} --- фасад выбора пайплайна.
+\end{itemize}
+
+Валидация входа выполняется на уровне Pydantic (\texttt{content}: 1--32000 символов).
+Ошибки бизнес-логики маппятся в HTTP 400/500 с логированием через \texttt{structlog}.
+
+\section{Пайплайн локальной модерации}
+
+Последовательность обработки в \texttt{LocalModerator}:
+
+\begin{enumerate}
+    \item Классификация токсичности (\texttt{unitary/toxic-bert}).
+    \item Regex-детектор PII и паттернов jailbreak.
+    \item Семантический детектор jailbreak (MiniLM, cosine similarity).
+    \item Эвристики по ключевым словам (self-harm, malware, fraud и др.).
+    \item Агрегация сигналов в \texttt{RiskScorer}.
+\end{enumerate}
+
+\section{Пайплайн облачной модерации}
+
+\begin{enumerate}
+    \item Формирование запроса: \texttt{content} + \texttt{context}.
+    \item RAG: поиск top-$K$ фрагментов политики в ChromaDB.
+    \item LLM: классификация с подстановкой политик в промпт.
+    \item Нормализация JSON в доменные enum'ы.
+\end{enumerate}
+
+\section{RAG и ChromaDB}
+
+Корпус: \texttt{data/policies/policy\_chunks.json} (18 документов).
+Эмбеддинги: \texttt{sentence-transformers/all-MiniLM-L6-v2}.
+Хранилище: персистентный \texttt{PersistentClient} (\texttt{CHROMA\_PERSIST\_DIR}).
+Индексация: \texttt{scripts/ingest\_policies.py}.
+
+\section{Интеграция OpenRouter / OpenAI}
+
+Клиент \texttt{AsyncOpenAI} с параметрами:
+\begin{itemize}
+    \item \texttt{OPENAI\_API\_KEY} --- ключ OpenRouter или OpenAI;
+    \item \texttt{OPENAI\_BASE\_URL} --- по умолчанию OpenAI, для OpenRouter: \texttt{https://openrouter.ai/api/v1};
+    \item \texttt{OPENAI\_MODEL} --- идентификатор модели (напр.\ \texttt{openai/gpt-4o-mini}).
+\end{itemize}
+Ответ запрашивается в формате \texttt{json\_object}, \texttt{temperature=0}.
+
+\section{Логирование и observability}
+
+Используется \texttt{structlog}:
+\begin{itemize}
+    \item development --- цветной консольный вывод;
+    \item production (\texttt{APP\_ENV=production}) --- JSON-логи для агрегации.
+\end{itemize}
+Ключевые события: \texttt{moderation\_request}, \texttt{local\_moderation\_complete},
+\texttt{semantic\_jailbreak\_detected}, \texttt{llm\_classification\_complete},
+\texttt{risk\_aggregation\_complete}.
+
+%======================================================================
+\chapter{Локальный подход (OSS moderation)}
+%======================================================================
+
+\section{Модель toxic-bert}
+
+Модель \texttt{unitary/toxic-bert} (HuggingFace \texttt{pipeline}, text-classification)
+возвращает многометочные скоры: \texttt{toxic}, \texttt{severe\_toxic}, \texttt{obscene},
+\texttt{threat}, \texttt{insult}, \texttt{identity\_hate}.
+Порог \texttt{LOCAL\_MODEL\_THRESHOLD} (по умолчанию 0.65) определяет флаг нарушения.
+Маппинг меток на категории риска выполняется в \texttt{transformer.py}.
+
+\textbf{Плюсы:} автономность, низкая стоимость inference после прогрева.
+\textbf{Минусы:} слабая чувствительность к jailbreak без явных токсичных маркеров;
+ограничение длины входа ($\sim$512 токенов).
+
+\section{Regex PII detector}
+
+\texttt{PIIDetector} ищет шаблоны: email, телефон (US), SSN, номер карты, IPv4,
+API-ключи (\texttt{sk-...}), AWS Access Key и др.
+При обнаружении формируется сигнал \texttt{pii\_leakage} или \texttt{privacy\_violations}.
+
+\section{Regex jailbreak detection}
+
+Набор \texttt{JAILBREAK\_PATTERNS}: ignore instructions, DAN, role override,
+утечка system prompt, delimiter injection, policy bypass и др.
+Даёт высокую точность на известных формулировках при низкой латентности.
+
+\section{Семантический детектор jailbreak}
+
+Подробно --- глава~\ref{ch:semantic}. В локальном пайплайне добавляет сигнал
+\texttt{semantic\_jailbreak} с категорией \texttt{jailbreak\_attempts}.
+
+\section{Risk scorer и ensemble aggregation}
+
+Каждый детектор порождает \texttt{RiskSignal(source, category, score, detail)}.
+Веса категорий заданы в \texttt{CATEGORY\_WEIGHTS} (jailbreak --- 1.0, toxic\_language --- 0.6).
+Агрегированный скор:
+\[
+s_{\mathrm{ens}} = \min\left(\frac{1}{n}\sum_{i=1}^{n} w_i \cdot s_i,\; 1\right)
+\]
+Уровень риска: $s \geq 0.75 \Rightarrow \mathrm{HIGH}$, $s \geq 0.45 \Rightarrow \mathrm{MEDIUM}$.
+Решение: HIGH$\to$BLOCK, MEDIUM$\to$WARN, LOW$\to$ALLOW.
+
+\section{Сводка: плюсы и минусы локального пайплайна}
+
+\begin{table}[H]
+\centering
+\caption{Локальный пайплайн: оценка}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Преимущества} & Нет egress в облако LLM; предсказуемая латентность после warm-up; \\
+& объяснимые сигналы (source + detail); выше accuracy на тестовом бенчмарке. \\
+\midrule
+\textbf{Недостатки} & Требует RAM/CPU для моделей; пороги требуют калибровки; \\
+& слабее на редких перефразированиях без семантики; нет ссылок на policy ID. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+%======================================================================
+\chapter{Облачный подход (LLM + RAG)}
+%======================================================================
+
+\section{Retrieval pipeline}
+
+\begin{lstlisting}[style=python]
+# PolicyRAG.retrieve(query) -> list[dict]
+results = collection.query(query_texts=[query], n_results=top_k)
+\end{lstlisting}
+
+Запрос --- конкатенация \texttt{context} и \texttt{content}.
+Метаданные чанков: \texttt{category}, \texttt{risk\_level}, \texttt{title}.
+
+\section{Embeddings}
+
+Единая модель \texttt{all-MiniLM-L6-v2} для ChromaDB и семантического jailbreak.
+Размерность 384, cosine distance в HNSW-индексе Chroma.
+
+\section{Policy chunks}
+
+18 JSON-объектов с полями \texttt{id}, \texttt{title}, \texttt{category},
+\texttt{risk\_level}, \texttt{text}. Покрывают все категории ТЗ.
+
+\section{Structured JSON classification}
+
+Системный промпт фиксирует схему ответа LLM. Пример полей:
+\texttt{decision}, \texttt{category}, \texttt{risk\_level}, \texttt{explanation}.
+Парсинг через \texttt{json.loads}, нормализация в \texttt{\_normalize()}.
+
+\section{Retry logic}
+
+Декоратор \texttt{tenacity}: до 3 попыток, экспоненциальная задержка 1--8\,с.
+Снижает влияние сетевых сбоев OpenRouter.
+
+\section{Fallback strategy}
+
+При ошибке парсинга JSON: \texttt{decision=WARN}, \texttt{category=none},
+\texttt{risk\_level=MEDIUM} --- консервативная стратегия (не пропускать сомнительный контент молча).
+
+\section{Плюсы и минусы облачного пайплайна}
+
+\begin{table}[H]
+\centering
+\caption{Облачный пайплайн: оценка}
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\textbf{Преимущества} & Гибкость формулировок политики; естественные объяснения; \\
+& быстрое обновление политик через re-ingest без деплоя правил. \\
+\midrule
+\textbf{Недостатки} & Зависимость от API; выше латентность и стоимость; \\
+& риски трансграничной передачи данных; на бенчмарке accuracy 5/10. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+%======================================================================
+\chapter{Semantic Jailbreak Detection}
+\label{ch:semantic}
+%======================================================================
+
+\section{Назначение}
+
+Regex ловит точные и близкие шаблоны, но пропускает перефразирования
+(``обойди ограничения безопасности другими словами'').
+Семантический модуль сопоставляет вход с \emph{каноническими} jailbreak-примерами
+в пространстве эмбеддингов.
+
+\section{sentence-transformers}
+
+Модель \texttt{SemanticJailbreakDetector} загружает \texttt{SentenceTransformer}
+один раз на процесс (\texttt{@lru\_cache}). Кодирование выполняется под \texttt{torch.no\_grad()}.
+
+\section{Cosine similarity}
+
+Векторы L2-нормализуются (\texttt{normalize\_embeddings=True}).
+Косинусное сходство реализовано скалярным произведением:
+\[
+\cos(\mathbf{q}, \mathbf{c}_i) = \mathbf{q}^\top \mathbf{c}_i
+\]
+Берётся $\max_i \cos(\mathbf{q}, \mathbf{c}_i)$; при $\max \geq \tau$ --- детекция.
+
+\section{Canonical jailbreak prompts}
+
+23 эталонных фразы (DAN, ignore instructions, grandma exploit, STAN mode и др.)
+хранятся в \texttt{CANONICAL\_JAILBREAKS}. Эмбеддинги кэшируются при первом вызове
+\texttt{\_encode\_canonical()}.
+
+\section{Threshold tuning}
+
+Параметр \texttt{SEMANTIC\_JAILBREAK\_THRESHOLD} (по умолчанию 0.62).
+Повышение $\tau$ снижает false positive, но увеличивает false negative.
+Рекомендуется калибровка на валидационной выборке заказчика.
+
+\section{Отличие от regex}
+
+\begin{table}[H]
+\centering
+\caption{Regex vs семантический детектор}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{Regex} & \textbf{Semantic} \\
+\midrule
+Механизм & Подстрока / паттерн & Сходство в embedding space \\
+Перефразы & Слабо & Сильнее \\
+Ложные срабатывания & На случайные совпадения & На близкие по смыслу безопасные фразы \\
+Латентность & Микросекунды & Десятки--сотни мс (encode) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Интерфейс: \texttt{detect(text) -> (bool, float, str|None)} --- флаг, скор, matched example.
+
+%======================================================================
+\chapter{API и интерфейсы}
+%======================================================================
+
+\section{Эндпоинты}
+
+\begin{table}[H]
+\centering
+\caption{REST API}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+\textbf{Метод} & \textbf{Путь} & \textbf{Назначение} \\
+\midrule
+GET & /api/v1/health & Статус и версия \\
+POST & /api/v1/moderate & Модерация (approach в теле) \\
+POST & /api/v1/moderate/local & Принудительно local \\
+POST & /api/v1/moderate/cloud & Принудительно cloud \\
+GET & /docs & Swagger UI \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Схема запроса и ответа}
+
+\begin{lstlisting}[style=json]
+{
+  "content": "Текст ответа ассистента",
+  "approach": "local",
+  "context": "Опциональный контекст диалога"
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=json]
+{
+  "decision": "BLOCK",
+  "category": "jailbreak_attempts",
+  "risk_level": "HIGH",
+  "explanation": "Ensemble moderation detected...",
+  "approach": "local",
+  "confidence": 0.87,
+  "retrieved_policies": null
+}
+\end{lstlisting}
+
+\section{Healthcheck}
+
+\texttt{GET /api/v1/health} возвращает \texttt{status}, \texttt{version}, список \texttt{approaches}.
+Используется в Docker HEALTHCHECK.
+
+%======================================================================
+\chapter{Benchmark и сравнение подходов}
+%======================================================================
+
+Датасет: \texttt{tests/benchmark\_dataset.json}, 10 размеченных примеров.
+Скрипт: \texttt{scripts/benchmark\_compare.py}.
+
+\section{Результаты}
+
+\begin{table}[H]
+\centering
+\caption{Сравнение пайплайнов на тестовом наборе}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Метрика} & \textbf{Local (OSS)} & \textbf{Cloud (LLM+RAG)} \\
+\midrule
+Accuracy & 7 / 10 (70\%) & 5 / 10 (50\%) \\
+Средняя латентность & 1402 ms & 3515 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Trade-off анализ}
+
+\begin{longtable}{@{}p{3.2cm}p{5cm}p{5cm}@{}}
+\toprule
+\textbf{Критерий} & \textbf{Local} & \textbf{Cloud} \\
+\midrule
+\endhead
+Латентность & Ниже (после warm-up) & Выше (сеть + LLM) \\
+Стоимость & Только compute & Токены + API \\
+Explainability & Источник сигнала (transformer, regex, semantic) & Текст LLM + policy IDs \\
+Jailbreak robustness & Regex + semantic + rules & Зависит от промпта и RAG \\
+Масштабируемость & Горизонтально, stateless* & Rate limits провайдера \\
+\bottomrule
+\multicolumn{3}{@{}p{\linewidth}@{}}{\footnotesize *Модели в памяти процесса; для 2M msg/h нужен пул воркеров.}
+\end{longtable}
+
+%======================================================================
+\chapter{Production-рекомендация}
+%======================================================================
+
+\section{Local как основной контур}
+
+На основании бенчмарка и архитектурных свойств \textbf{рекомендуется}
+использовать локальный пайплайн для inline-модерации каждого ответа:
+\begin{itemize}
+    \item выше accuracy на фиксированном наборе;
+    \item ниже латентность;
+    \item отсутствие передачи текста во внешний LLM.
+\end{itemize}
+
+\section{Cloud как secondary layer}
+
+Облачный пайплайн целесообразен для:
+\begin{itemize}
+    \item случаев \texttt{WARN} (второе мнение);
+    \item асинхронной очереди human/LLM review;
+    \item сценариев, где критична ссылка на текст корпоративной политики.
+\end{itemize}
+
+\section{Гибридная архитектура}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    box/.style={rectangle, draw, rounded corners, minimum width=2.8cm, minimum height=0.8cm, align=center, font=\small},
+    arr/.style={-{Stealth}, thick}
+]
+    \node[box] (out) {Ответ LLM};
+    \node[box, right=1.2cm of out] (loc) {Local};
+    \node[box, right=1.2cm of loc] (dec) {Решение};
+    \node[box, below=1cm of dec] (cloud) {Cloud (async)};
+
+    \draw[arr] (out) -- (loc);
+    \draw[arr] (loc) -- node[above, font=\footnotesize]{ALLOW/BLOCK} (dec);
+    \draw[arr] (loc) -- node[left, font=\footnotesize]{WARN} (cloud);
+    \draw[arr] (cloud) -- (dec);
+\end{tikzpicture}
+\caption{Рекомендуемый гибридный контур}
+\end{figure}
+
+%======================================================================
+\chapter{Соответствие требованиям 152-ФЗ}
+%======================================================================
+
+Федеральный закон №\,152-ФЗ регулирует обработку персональных данных (ПДн)
+граждан РФ. Модерация может обрабатывать ПДн из пользовательских сообщений.
+
+\section{Риски облачного LLM}
+
+Передача текста в OpenRouter/зарубежного провайдера может constitute
+трансграничную передачу ПДн. Требуется правовое основание, уведомление РКН,
+договор с оператором, оценка страны получателя.
+
+\section{Data residency}
+
+Для контуров с требованием локализации --- размещение сервиса и логов в РФ,
+\textbf{отключение cloud moderation} для потоков с ПДн, использование только local pipeline.
+
+\section{Логирование и PII}
+
+\texttt{structlog} не должен писать полный пользовательский текст на INFO в prod.
+Рекомендации: маскирование, хеширование, сокращённый preview, отдельный audit storage
+с контролем доступа и сроком хранения.
+
+%======================================================================
+\chapter{Масштабирование и production concerns}
+%======================================================================
+
+\section{Целевая нагрузка: 2 млн сообщений/час}
+
+$\approx 556$ RPS среднее, пики $\times 3$--$5$. Один синхронный запрос local
+$\sim$50--200\,ms после warm-up (бенчмарк 1402\,ms включает cold start моделей).
+
+\section{Стратегии}
+
+\begin{itemize}
+    \item \textbf{Horizontal scaling} --- N реплик FastAPI за балансировщиком.
+    \item \textbf{Model warmup} --- прогрев toxic-bert и MiniLM при старте пода.
+    \item \textbf{Caching} --- кэш эмбеддингов канонических jailbreak; опционально LRU по hash(content).
+    \item \textbf{Async processing} --- WARN/BLOCK review через очередь (Kafka/RabbitMQ).
+    \item \textbf{Rate limiting} --- на API gateway; защита от abuse.
+    \item \textbf{Observability} --- метрики Prometheus: \texttt{moderation\_latency\_seconds},
+    \texttt{decision\_total\{decision,category\}}, \texttt{semantic\_hits\_total};
+    дашборды Grafana, алерты на рост BLOCK/WARN.
+\end{itemize}
+
+%======================================================================
+\chapter{Тестирование}
+%======================================================================
+
+\begin{table}[H]
+\centering
+\caption{Покрытие тестами}
+\begin{tabular}{@{}lp{8.5cm}@{}}
+\toprule
+\textbf{Модуль} & \textbf{Содержание} \\
+\midrule
+\texttt{test\_api.py} & Health, local moderate, PII, validation 422 \\
+\texttt{test\_jailbreak.py} & 10+ jailbreak/PII/unsafe кейсов \\
+\texttt{test\_semantic\_detector.py} & Кэш, порог, safe vs jailbreak \\
+\texttt{benchmark\_dataset.json} & 10 labeled samples для benchmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Запуск: \texttt{pytest -v}. Cloud-тесты требуют API-ключа и опциональны в CI.
+
+%======================================================================
+\chapter{Заключение}
+%======================================================================
+
+\section{Реализовано}
+
+\begin{itemize}
+    \item Production-style MVP: FastAPI, два пайплайна, Docker, Swagger.
+    \item Локальный ensemble: toxic-bert, PII, regex jailbreak, semantic jailbreak, scorer.
+    \item Облачный контур: ChromaDB RAG, OpenRouter-совместимый LLM, retry, JSON fallback.
+    \item 18 категорий, structured output, benchmark, pytest.
+\end{itemize}
+
+\section{Направления улучшения}
+
+Калибровка порогов на расширенном датасете; гибридный score local+cloud;
+ONNX/GPU; версионирование политик; Prometheus middleware; мультиязычные эталоны jailbreak.
+
+\section{Итоговая рекомендация}
+
+Для production-контура conversational AI с упором на безопасность, латентность
+и соответствие 152-ФЗ: \textbf{основной путь --- LocalModerator};
+\textbf{CloudModerator} --- вторичный слой для спорных случаев и policy-grounded review.
+
+\end{document}
