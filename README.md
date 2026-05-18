@@ -292,7 +292,7 @@ Edit `.env` for cloud moderation:
 ```env
 OPENAI_API_KEY=<openrouter-api-key>
 OPENAI_BASE_URL=https://openrouter.ai/api/v1
-OPENAI_MODEL=openai/gpt-4o-mini
+OPENAI_MODEL=mistralai/mistral-small-3.1-24b-instruct
 ```
 
 ```bash
@@ -395,7 +395,7 @@ Service listens on port **8000**. Chroma data persists in the `chroma_data` volu
 | `LOG_LEVEL` | `INFO` | Log verbosity |
 | `OPENAI_API_KEY` | — | OpenRouter (or OpenAI) API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Set to OpenRouter endpoint for cloud path |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model ID (e.g. `openai/gpt-4o-mini` on OpenRouter) |
+| `OPENAI_MODEL` | `mistral-small-3.1-24b-instruct` | Model ID (e.g. `mistralai/mistral-small-3.1-24b-instruct` on OpenRouter) |
 | `LOCAL_MODEL_NAME` | `unitary/toxic-bert` | HuggingFace toxicity model |
 | `LOCAL_MODEL_THRESHOLD` | `0.65` | Toxicity flag threshold |
 | `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Shared embedding model |
