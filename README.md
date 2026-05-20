@@ -217,7 +217,7 @@ python scripts/benchmark.py --cloud
 
 **Default to the local pipeline** for inline, pre-delivery moderation:
 
-- Sub-second latency achievable after warm-up (benchmark avg ~1.4s includes cold-start model load).  
+- Sub-second latency achievable after warm-up. Benchmark avg ~1.4s measured after models are loaded (cold start on Apple Silicon GPU takes ~30s, on CPU would be longer).  
 - No third-party data egress for classification logic.  
 - Higher accuracy on the current labeled set.  
 - Deterministic, auditable signals (regex + semantic match + scorer weights).
